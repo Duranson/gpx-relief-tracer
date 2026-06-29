@@ -90,6 +90,14 @@ CAMERA_DISTANCE = 5000  # meters (scene units)
 CAMERA_AZIMUTH = 140     # degrees
 CAMERA_ELEVATION = 25   # degrees
 
+CONTOUR_THICKNESS = 0.0003  # fraction of terrain extent; decrease to make contours thinner
+
+QUICK_RENDER = True   # True: 480p / 16 samples for fast preview; False: 1080p / 64 samples
+RENDER_SAMPLES_QUICK = 16
+RENDER_SAMPLES_FULL  = 64
+RENDER_RES_QUICK = (854, 480)
+RENDER_RES_FULL  = (1920, 1080)
+
  
 
 # =========================
@@ -336,7 +344,7 @@ def clean_scene():
             bpy.data.meshes.remove(mesh, do_unlink=True)
 
     for curve in list(bpy.data.curves):
-        if curve.name.startswith('gpx_curve'):
+        if curve.name.startswith('gpx_curve') or curve.name.startswith('contours'):
             bpy.data.curves.remove(curve, do_unlink=True)
 
     for camera in list(bpy.data.cameras):
@@ -492,20 +500,31 @@ def create_contour_object(segments):
     if bpy is None:
         return None
 
-    verts = []
-    edges = []
+    curve = bpy.data.curves.new('contours', type='CURVE')
+    curve.dimensions = '3D'
+
+    terrain = bpy.data.objects.get('terrain')
+    extent = 1.0
+    if terrain is not None:
+        try:
+            bbox_world = [terrain.matrix_world @ Vector(corner) for corner in terrain.bound_box]
+            xs = [v.x for v in bbox_world]
+            ys = [v.y for v in bbox_world]
+            zs = [v.z for v in bbox_world]
+            extent = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
+        except Exception:
+            extent = 1.0
+
+    curve.bevel_depth = extent * CONTOUR_THICKNESS
+    curve.resolution_u = 1
 
     for start, end in segments:
-        base = len(verts)
-        verts.append(start)
-        verts.append(end)
-        edges.append((base, base + 1))
+        spline = curve.splines.new('POLY')
+        spline.points.add(1)  # starts with 1 point; add 1 more → 2 total
+        spline.points[0].co = (*start, 1.0)
+        spline.points[1].co = (*end, 1.0)
 
-    mesh = bpy.data.meshes.new('contours')
-    mesh.from_pydata(verts, edges, [])
-    mesh.update()
-
-    obj = bpy.data.objects.new('contours', mesh)
+    obj = bpy.data.objects.new('contours', curve)
     bpy.context.collection.objects.link(obj)
     return obj
 
@@ -681,7 +700,7 @@ def setup_materials():
 
     return {
         'terrain': terrain_mat,
-        'contours': make_emission('contour_mat', (1.0, 1.0, 1.0, 1.0), 10.0),
+        'contours': make_emission('contour_mat', (1.0, 1.0, 1.0, 1.0), 3.0),
         # Make the GPX emission pure red and very bright for visibility
         'gpx': make_emission('gpx_mat', (1.0, 0.0, 0.0, 1.0), 20.0),
     }
@@ -769,16 +788,16 @@ def main():
                 pass
             # reduce samples for faster renders by default
             try:
-                scene.cycles.samples = 64
+                scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
             except Exception:
                 pass
-            # sensible default resolution
-            scene.render.resolution_x = 1920
-            scene.render.resolution_y = 1080
+            res_x, res_y = RENDER_RES_QUICK if QUICK_RENDER else RENDER_RES_FULL
+            scene.render.resolution_x = res_x
+            scene.render.resolution_y = res_y
         except Exception:
             # fallback to EEVEE if Cycles unavailable
             scene.render.engine = 'BLENDER_EEVEE'
-        out_path = BASE_DIR / 'render.png'
+        out_path = BASE_DIR / ('render_quick.png' if QUICK_RENDER else 'render.png')
         scene.render.filepath = str(out_path)
         # ensure scene camera is set
         if scene.camera is None and cam is not None:
