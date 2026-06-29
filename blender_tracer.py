@@ -86,9 +86,9 @@ GPX_PATH = BASE_DIR / Path(r"example\gpx\Villard-de-Lans_Alpinisme20260620081248
 VERTICAL_EXAGGERATION = 1.5
 CONTOUR_INTERVAL = 10  # meters
 
-CAMERA_DISTANCE = 2500  # meters (scene units)
-CAMERA_AZIMUTH = 35     # degrees
-CAMERA_ELEVATION = 55   # degrees
+CAMERA_DISTANCE = 5000  # meters (scene units)
+CAMERA_AZIMUTH = 140     # degrees
+CAMERA_ELEVATION = 25   # degrees
 
  
 
@@ -784,9 +784,6 @@ def main():
         save_contour_cache(cache_path, contour_segments)
     contour_obj = create_contour_object(contour_segments)
     print('  Contour object created')
-
-    reference_line = create_reference_line(terrain)
-    print('  Reference line created')
 
     print('STEP 7/7: Projecting GPX onto terrain and applying materials...')
     ray_height = float(np.nanmax(elev)) * VERTICAL_EXAGGERATION + 1000.0
