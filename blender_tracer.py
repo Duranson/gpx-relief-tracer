@@ -509,52 +509,6 @@ def create_contour_object(segments):
     bpy.context.collection.objects.link(obj)
     return obj
 
-
-def create_reference_line(terrain):
-    if bpy is None:
-        return None
-
-    curve = bpy.data.curves.new('reference_line', type='CURVE')
-    curve.dimensions = '3D'
-    spline = curve.splines.new('POLY')
-    spline.points.add(1)
-
-    bbox_world = [terrain.matrix_world @ Vector(corner) for corner in terrain.bound_box]
-    xs = [v.x for v in bbox_world]
-    ys = [v.y for v in bbox_world]
-    zs = [v.z for v in bbox_world]
-    center = Vector((sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs)))
-    extent = max(max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs), 1.0)
-    line_z = center.z + max(200.0, extent * 0.15)
-
-    start = Vector((min(xs) - extent * 0.2, center.y, line_z))
-    end = Vector((max(xs) + extent * 0.2, center.y, line_z))
-    spline.points[0].co = (start.x, start.y, start.z, 1.0)
-    spline.points[1].co = (end.x, end.y, end.z, 1.0)
-
-    curve.bevel_depth = max(8.0, extent * 0.008)
-    curve.resolution_u = 6
-
-    obj = bpy.data.objects.new('reference_line', curve)
-    bpy.context.collection.objects.link(obj)
-
-    mat = bpy.data.materials.new('reference_line_mat')
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    nodes.clear()
-
-    output = nodes.new(type='ShaderNodeOutputMaterial')
-    emission = nodes.new(type='ShaderNodeEmission')
-    emission.inputs[0].default_value = (0.0, 0.8, 1.0, 1.0)
-    emission.inputs[1].default_value = 20.0
-    links.new(emission.outputs[0], output.inputs[0])
-
-    obj.active_material = mat
-    obj.show_in_front = True
-    return obj
-
-
 # =========================
 # PROJECT GPX ON TERRAIN
 # =========================
@@ -712,6 +666,7 @@ def setup_materials():
         links.new(emission.outputs[0], output.inputs[0])
         return mat
 
+    # terrain should be a black material
     terrain_mat = bpy.data.materials.new(name='terrain_mat')
     terrain_mat.use_nodes = True
     nodes = terrain_mat.node_tree.nodes
@@ -720,13 +675,13 @@ def setup_materials():
 
     output = nodes.new(type='ShaderNodeOutputMaterial')
     principled = nodes.new(type='ShaderNodeBsdfPrincipled')
-    principled.inputs['Base Color'].default_value = (0.2, 0.4, 0.1, 1.0)
+    principled.inputs['Base Color'].default_value = (0, 0, 0, 1.0)
     principled.inputs['Roughness'].default_value = 1.0
     links.new(principled.outputs[0], output.inputs[0])
 
     return {
         'terrain': terrain_mat,
-        'contours': make_emission('contour_mat', (1.0, 1.0, 1.0, 1.0), 3.0),
+        'contours': make_emission('contour_mat', (1.0, 1.0, 1.0, 1.0), 10.0),
         # Make the GPX emission pure red and very bright for visibility
         'gpx': make_emission('gpx_mat', (1.0, 0.0, 0.0, 1.0), 20.0),
     }
