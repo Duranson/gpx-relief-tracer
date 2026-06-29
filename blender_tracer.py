@@ -160,51 +160,94 @@ def bounds_from_points(x, y, margin=1000.0):
 
 def discover_dem_candidates(base_dir=None):
     search_root = Path(base_dir or DEM_FOLDER)
-    # list all files and print their names and extension
-    i=0
-    for path in search_root.rglob('*'):
-        if i > 10:
-            break
-        if path.is_file():
-            print(f'  Found file: {path.name} (ext: {path.suffix})')
-            i += 1
     return sorted(path for path in search_root.rglob('*.asc') if path.is_file())
 
 
-def select_dem_for_gpx(candidates, gpx_x, gpx_y):
-    print(f'  Selecting DEM tile from {len(candidates)} candidates...')
+def select_dem_tiles_for_gpx(candidates, gpx_x, gpx_y):
+    print(f'  Selecting DEM tiles from {len(candidates)} candidates...')
     candidate_paths = [Path(path) for path in candidates]
     if not candidate_paths:
-        return None
+        return []
 
-    best_path = None
-    best_score = -1.0
-    best_distance = float('inf')
+    selected = []
+    if len(gpx_x) != len(gpx_y):
+        return candidate_paths[:1]
 
     for path in candidate_paths:
         try:
             with rasterio.open(path) as ds:
                 bounds = ds.bounds
-                overlap_x = max(0.0, min(np.nanmax(gpx_x), bounds.right) - max(np.nanmin(gpx_x), bounds.left))
-                overlap_y = max(0.0, min(np.nanmax(gpx_y), bounds.top) - max(np.nanmin(gpx_y), bounds.bottom))
-                overlap_area = overlap_x * overlap_y
-                center_x = (bounds.left + bounds.right) / 2.0
-                center_y = (bounds.bottom + bounds.top) / 2.0
-                center_distance = abs(center_x - np.nanmean(gpx_x)) + abs(center_y - np.nanmean(gpx_y))
+                for i in range(1, len(gpx_x)):
+                    x0 = float(gpx_x[i - 1])
+                    y0 = float(gpx_y[i - 1])
+                    x1 = float(gpx_x[i])
+                    y1 = float(gpx_y[i])
+                    if np.isnan(x0) or np.isnan(y0) or np.isnan(x1) or np.isnan(y1):
+                        continue
 
-                if overlap_area > best_score + 1e-9:
-                    best_path = path
-                    best_score = overlap_area
-                    best_distance = center_distance
-                elif abs(overlap_area - best_score) <= 1e-9 and center_distance < best_distance:
-                    best_path = path
-                    best_distance = center_distance
+                    segment_min_x = min(x0, x1)
+                    segment_max_x = max(x0, x1)
+                    segment_min_y = min(y0, y1)
+                    segment_max_y = max(y0, y1)
+                    overlap_x = max(0.0, min(segment_max_x, bounds.right) - max(segment_min_x, bounds.left))
+                    overlap_y = max(0.0, min(segment_max_y, bounds.top) - max(segment_min_y, bounds.bottom))
+                    if overlap_x > 0.0 and overlap_y > 0.0:
+                        selected.append(path)
+                        break
         except Exception as exc:
             print(f'  Skipping DEM candidate {path}: {exc}')
 
-    if best_path is not None:
-        return best_path
-    return candidate_paths[0]
+    if not selected:
+        return candidate_paths[:1]
+    return list(dict.fromkeys(selected))
+
+
+def merge_dem_tiles(tile_paths):
+    if not tile_paths:
+        return None, None, None
+
+    loaded_tiles = []
+    for path in tile_paths:
+        with rasterio.open(path) as ds:
+            loaded_tiles.append((Path(path), ds.read(1).astype(np.float32), ds.transform, ds.crs, ds.bounds))
+
+    if not loaded_tiles:
+        return None, None, None
+
+    first_path, first_elev, first_transform, first_crs, first_bounds = loaded_tiles[0]
+    left = min(bounds.left for _, _, _, _, bounds in loaded_tiles)
+    right = max(bounds.right for _, _, _, _, bounds in loaded_tiles)
+    bottom = min(bounds.bottom for _, _, _, _, bounds in loaded_tiles)
+    top = max(bounds.top for _, _, _, _, bounds in loaded_tiles)
+
+    cellsize = abs(first_transform.a)
+    width = max(1, int(np.ceil((right - left) / cellsize)))
+    height = max(1, int(np.ceil((top - bottom) / cellsize)))
+
+    mosaic = np.full((height, width), np.nan, dtype=np.float32)
+    global_transform = Affine(cellsize, 0.0, left, 0.0, -cellsize, top)
+
+    for _, elev, _, _, bounds in loaded_tiles:
+        col0, row0 = ~global_transform * (bounds.left, bounds.top)
+        col0 = int(np.floor(col0))
+        row0 = int(np.floor(row0))
+
+        dst_col0 = max(0, col0)
+        dst_row0 = max(0, row0)
+        src_col0 = max(0, -col0)
+        src_row0 = max(0, -row0)
+
+        dst_col1 = min(width, col0 + elev.shape[1])
+        dst_row1 = min(height, row0 + elev.shape[0])
+        src_col1 = src_col0 + (dst_col1 - dst_col0)
+        src_row1 = src_row0 + (dst_row1 - dst_row0)
+
+        if dst_col1 <= dst_col0 or dst_row1 <= dst_row0:
+            continue
+
+        mosaic[dst_row0:dst_row1, dst_col0:dst_col1] = elev[src_row0:src_row1, src_col0:src_col1]
+
+    return mosaic, global_transform, first_crs
 
 
 def crop_dem_to_bounds(elev, transform, min_x, max_x, min_y, max_y):
@@ -230,8 +273,7 @@ def crop_dem_to_bounds(elev, transform, min_x, max_x, min_y, max_y):
     return cropped, new_transform
 
 
-def contour_cache_path(dem_path, gpx_path, interval, bounds):
-    dem_path = Path(dem_path)
+def contour_cache_path(dem_paths, gpx_path, interval, bounds):
     gpx_path = Path(gpx_path)
 
     def stat_fields(path):
@@ -241,11 +283,18 @@ def contour_cache_path(dem_path, gpx_path, interval, bounds):
         except OSError:
             return 0, 0
 
-    dem_mtime, dem_size = stat_fields(dem_path)
+    if isinstance(dem_paths, (list, tuple, set)):
+        dem_paths = [Path(path) for path in dem_paths]
+        dem_mtime = sum(st.st_mtime_ns for st in (path.stat() if path.exists() else Path('.').stat() for path in dem_paths))
+        dem_size = sum(st.st_size for st in (path.stat() if path.exists() else Path('.').stat() for path in dem_paths))
+    else:
+        dem_path = Path(dem_paths)
+        dem_mtime, dem_size = stat_fields(dem_path)
+
     gpx_mtime, gpx_size = stat_fields(gpx_path)
 
     key = (
-        f"{dem_path}|{gpx_path}|{interval}|"
+        f"{dem_paths}|{gpx_path}|{interval}|"
         f"{bounds[0]:.3f}|{bounds[1]:.3f}|{bounds[2]:.3f}|{bounds[3]:.3f}|"
         f"{dem_mtime}|{dem_size}|{gpx_mtime}|{gpx_size}"
     )
@@ -695,18 +744,18 @@ def main():
     lon, lat, gpx_elev = load_gpx(GPX_PATH)
     print(f'  GPX points loaded: {len(lon)}')
 
-    print('STEP 3/7: Converting GPX coordinates and selecting the matching DEM tile...')
+    print('STEP 3/7: Converting GPX coordinates and collecting all touched DEM tiles...')
     gpx_x, gpx_y = gpx_to_dem_coords(lon, lat, None, DEM_PATH)
     dem_candidates = discover_dem_candidates(DEM_FOLDER)
-    selected_dem = select_dem_for_gpx(dem_candidates, gpx_x, gpx_y)
+    selected_dems = select_dem_tiles_for_gpx(dem_candidates, gpx_x, gpx_y)
     min_x, max_x, min_y, max_y = bounds_from_points(gpx_x, gpx_y, margin=1000.0)
     print(f'  GPX bbox: x=[{min_x:.1f},{max_x:.1f}], y=[{min_y:.1f},{max_y:.1f}]')
-    print(f'  Selected DEM tile: {selected_dem}')
+    print(f'  Selected DEM tiles ({len(selected_dems)}): {selected_dems}')
 
-    print('STEP 4/7: Loading DEM and cropping it to relevant bounds...')
-    elev, transform, dem_crs = load_dem(selected_dem)
-    print(f'  DEM loaded: shape={elev.shape}, CRS={dem_crs}, path={selected_dem}')
-    elev, transform = crop_dem_to_bounds(elev, transform, min_x, max_x, min_y, max_y)
+    print('STEP 4/7: Loading and merging DEM tiles before cropping...')
+    elevation_grid, transform, dem_crs = merge_dem_tiles(selected_dems)
+    print(f'  DEM mosaic loaded: shape={elevation_grid.shape}, CRS={dem_crs}, tiles={len(selected_dems)}')
+    elev, transform = crop_dem_to_bounds(elevation_grid, transform, min_x, max_x, min_y, max_y)
     print(f'  Cropped DEM shape: {elev.shape}')
 
     print('STEP 5/7: Creating terrain mesh...')
@@ -723,7 +772,7 @@ def main():
     except Exception as e:
         print(f'  Terrain bounds debug logging failed: {e}')
 
-    cache_path = contour_cache_path(selected_dem, GPX_PATH, CONTOUR_INTERVAL, (min_x, max_x, min_y, max_y))
+    cache_path = contour_cache_path(selected_dems, GPX_PATH, CONTOUR_INTERVAL, (min_x, max_x, min_y, max_y))
     if cache_path.exists():
         print(f'  Loading contour segments from cache: {cache_path.name}')
         contour_segments = load_contour_cache(cache_path)
