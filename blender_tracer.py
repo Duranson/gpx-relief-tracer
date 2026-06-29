@@ -82,7 +82,7 @@ except Exception:  # pragma: no cover - mathutils is not available outside Blend
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
 DEM_FOLDER = BASE_DIR / r"contour_lines\isere\ign"
-GPX_PATH   = BASE_DIR / r"example\gpx\Villard-de-Lans_Alpinisme20260620081248.gpx"
+GPX_PATH   = BASE_DIR / r"gpx\Villard-de-Lans_Alpinisme20260620081248.gpx"
 
 # ── Terrain ─────────────────────────────────────────────────────────────────
 VERTICAL_EXAGGERATION = 1.5
@@ -321,7 +321,7 @@ def contour_cache_path(dem_paths, gpx_path, interval, bounds):
         f"{dem_mtime}|{dem_size}|{gpx_mtime}|{gpx_size}"
     )
     digest = hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
-    return BASE_DIR / f"contours_cache_{digest}.npz"
+    return BASE_DIR / Path(f"cache") / f"contours_cache_{digest}.npz"
 
 
 def save_contour_cache(cache_path, segments):
@@ -811,7 +811,7 @@ def main():
         except Exception:
             # fallback to EEVEE if Cycles unavailable
             scene.render.engine = 'BLENDER_EEVEE'
-        out_path = BASE_DIR / ('render_quick.png' if QUICK_RENDER else 'render.png')
+        out_path = BASE_DIR / ('render\\render_quick.png' if QUICK_RENDER else 'render\\render.png')
         scene.render.filepath = str(out_path)
         # ensure scene camera is set
         if scene.camera is None and cam is not None:
