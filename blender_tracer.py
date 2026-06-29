@@ -78,27 +78,41 @@ except Exception:  # pragma: no cover - mathutils is not available outside Blend
 # =========================
 # CONFIGURATION
 # =========================
-BASE_DIR = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
-DEM_FOLDER = BASE_DIR / Path(r"contour_lines\isere\ign")
-DEM_PATH = DEM_FOLDER / Path(r"RGEALTI_FXX_0835_6470_MNT_LAMB93_IGN69.asc")
-GPX_PATH = BASE_DIR / Path(r"example\gpx\Villard-de-Lans_Alpinisme20260620081248.gpx")
 
+# ── Paths ──────────────────────────────────────────────────────────────────
+BASE_DIR   = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
+DEM_FOLDER = BASE_DIR / r"contour_lines\isere\ign"
+GPX_PATH   = BASE_DIR / r"example\gpx\Villard-de-Lans_Alpinisme20260620081248.gpx"
+
+# ── Terrain ─────────────────────────────────────────────────────────────────
 VERTICAL_EXAGGERATION = 1.5
-CONTOUR_INTERVAL = 10  # meters
+DEM_MARGIN            = 1000.0  # metres of DEM loaded around the GPX bounding box
 
-CAMERA_DISTANCE = 5000  # meters (scene units)
-CAMERA_AZIMUTH = 140     # degrees
-CAMERA_ELEVATION = 25   # degrees
+# ── Contour lines ────────────────────────────────────────────────────────────
+CONTOUR_INTERVAL  = 20      # metres between contour levels
+CONTOUR_THICKNESS = 0.0003  # fraction of terrain extent
 
-CONTOUR_THICKNESS = 0.0003  # fraction of terrain extent; decrease to make contours thinner
+# ── GPX track ────────────────────────────────────────────────────────────────
+GPX_THICKNESS = 0.003  # fraction of terrain extent
 
-QUICK_RENDER = True   # True: 480p / 16 samples for fast preview; False: 1080p / 64 samples
+# ── Camera ───────────────────────────────────────────────────────────────────
+CAMERA_DISTANCE  = 5000  # scene units (metres)
+CAMERA_AZIMUTH   = 140   # degrees, clockwise from north
+CAMERA_ELEVATION = 25    # degrees above horizon
+
+# ── Materials ────────────────────────────────────────────────────────────────
+TERRAIN_COLOR             = (0.0, 0.0, 0.0, 1.0)  # RGBA
+CONTOUR_COLOR             = (1.0, 1.0, 1.0, 1.0)  # RGBA
+CONTOUR_EMISSION_STRENGTH = 3.0
+GPX_COLOR                 = (1.0, 0.0, 0.0, 1.0)  # RGBA
+GPX_EMISSION_STRENGTH     = 20.0
+
+# ── Render ───────────────────────────────────────────────────────────────────
+QUICK_RENDER         = True   # True → fast preview; False → full quality
 RENDER_SAMPLES_QUICK = 16
 RENDER_SAMPLES_FULL  = 64
-RENDER_RES_QUICK = (854, 480)
-RENDER_RES_FULL  = (1920, 1080)
-
- 
+RENDER_RES_QUICK     = (854, 480)
+RENDER_RES_FULL      = (1920, 1080)
 
 # =========================
 # LOAD DEM
@@ -601,7 +615,7 @@ def create_gpx_curve(points):
         except Exception:
             extent = 1.0
 
-    bevel = extent * 0.003
+    bevel = extent * GPX_THICKNESS
     z_offset = max(1.0, extent * 0.001)
 
     for i, point in enumerate(points):
@@ -694,15 +708,14 @@ def setup_materials():
 
     output = nodes.new(type='ShaderNodeOutputMaterial')
     principled = nodes.new(type='ShaderNodeBsdfPrincipled')
-    principled.inputs['Base Color'].default_value = (0, 0, 0, 1.0)
+    principled.inputs['Base Color'].default_value = TERRAIN_COLOR
     principled.inputs['Roughness'].default_value = 1.0
     links.new(principled.outputs[0], output.inputs[0])
 
     return {
         'terrain': terrain_mat,
-        'contours': make_emission('contour_mat', (1.0, 1.0, 1.0, 1.0), 3.0),
-        # Make the GPX emission pure red and very bright for visibility
-        'gpx': make_emission('gpx_mat', (1.0, 0.0, 0.0, 1.0), 20.0),
+        'contours': make_emission('contour_mat', CONTOUR_COLOR, CONTOUR_EMISSION_STRENGTH),
+        'gpx': make_emission('gpx_mat', GPX_COLOR, GPX_EMISSION_STRENGTH),
     }
 
 
@@ -719,10 +732,11 @@ def main():
     print(f'  GPX points loaded: {len(lon)}')
 
     print('STEP 3/7: Converting GPX coordinates and collecting all touched DEM tiles...')
-    gpx_x, gpx_y = gpx_to_dem_coords(lon, lat, None, DEM_PATH)
     dem_candidates = discover_dem_candidates(DEM_FOLDER)
+    _dem_sample = dem_candidates[0] if dem_candidates else DEM_FOLDER
+    gpx_x, gpx_y = gpx_to_dem_coords(lon, lat, None, _dem_sample)
     selected_dems = select_dem_tiles_for_gpx(dem_candidates, gpx_x, gpx_y)
-    min_x, max_x, min_y, max_y = bounds_from_points(gpx_x, gpx_y, margin=1000.0)
+    min_x, max_x, min_y, max_y = bounds_from_points(gpx_x, gpx_y, margin=DEM_MARGIN)
     print(f'  GPX bbox: x=[{min_x:.1f},{max_x:.1f}], y=[{min_y:.1f},{max_y:.1f}]')
     print(f'  Selected DEM tiles ({len(selected_dems)}): {selected_dems}')
 
