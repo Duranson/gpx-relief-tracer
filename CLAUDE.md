@@ -12,37 +12,46 @@ The script must run inside Blender's Python environment:
 
 ```powershell
 # Headless render (adjust path to your Blender installation)
-blender --background --python blender_tracer.py
+blender --background --python scripts/blender_tracer.py
 
-# Interactive: open blender_tracer.py in Blender's Text Editor and press Run Script
+# Interactive: open scripts/blender_tracer.py in Blender's Text Editor and press Run Script
 ```
 
 Outside Blender (for testing pure-Python functions only — Blender scene operations are skipped):
 
 ```powershell
-.venv\Scripts\python blender_tracer.py
+.venv\Scripts\python scripts/blender_tracer.py
 ```
 
-Running tests (pytest is installed, no test suite exists yet):
+Running tests:
 
 ```powershell
-.venv\Scripts\pytest
+.venv\Scripts\pytest scripts/
+```
+
+Convert rendered frames to MP4:
+
+```powershell
+.venv\Scripts\python scripts/frames_to_mp4.py
 ```
 
 ## Repository layout
 
 ```
-blender_tracer.py       # entire pipeline — the only file to edit
+scripts/
+  blender_tracer.py     # entire pipeline — the only file to edit
+  frames_to_mp4.py      # assembles render/animation_frames/*.png into render/render.mp4
+  test_dem_selection.py # pytest test for DEM tile selection
 blender/                # .blend scene file(s)
 gpx/                    # input GPX tracks
 contour_lines/isere/ign/  # IGN DEM tiles (.asc)
 cache/                  # contour .npz cache files (auto-generated)
-render/                 # render output PNGs
+render/                 # render output PNGs and MP4
 ```
 
 ## Architecture
 
-Everything lives in the single file [blender_tracer.py](blender_tracer.py). The top of that file holds all configuration constants grouped by category (paths, terrain, contour lines, GPX track, camera, materials, render).
+Everything lives in the single file [scripts/blender_tracer.py](scripts/blender_tracer.py). The top of that file holds all configuration constants grouped by category (paths, terrain, contour lines, GPX track, camera, materials, render, animation).
 
 ### Pipeline (function `main`)
 

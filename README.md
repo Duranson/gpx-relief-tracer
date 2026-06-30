@@ -12,6 +12,16 @@ python -m venv .venv
 .venv\Scripts\pip install numpy rasterio gpxpy pytest
 ```
 
+## Usage
+
+```powershell
+# Run animation pipeline in Blender (headless)
+blender --background --python scripts/blender_tracer.py
+
+# Assemble PNG frames into MP4
+.venv\Scripts\python scripts/frames_to_mp4.py
+```
+
 ### ffmpeg (required to assemble PNG frames into MP4)
 
 **Option A — winget (Windows 10/11, recommended)**
