@@ -114,6 +114,30 @@ RENDER_SAMPLES_FULL  = 64
 RENDER_RES_QUICK     = (854, 480)
 RENDER_RES_FULL      = (1920, 1080)
 
+# ── Animation ─────────────────────────────────────────────────────────────────
+ANIMATE                     = True    # False → static render as before
+ANIMATION_FPS               = 24
+ANIMATION_SPEED             = 600     # real-time multiplier (e.g. 200 → 3h hike becomes 54s)
+                                      # requires GPX timestamps; falls back to ANIMATION_DURATION_FALLBACK
+ANIMATION_DURATION_FALLBACK = 60      # seconds, used when GPX has no timestamps
+PREVIEW_ANIMATION           = False    # True  → render one PNG at mid-course; ignores RENDER_ANIMATION
+                                      # False → full animation (keyframes + optional auto-render)
+RENDER_ANIMATION            = True    # False → set keyframes only (render manually in Blender)
+                                      # True  → trigger bpy.ops.render.render(animation=True) now
+
+CAMERA_MODE    = 'HELICOPTER'  # 'HELICOPTER' | 'ORBIT' | 'BIRD_EYE' | 'CINEMATIC'
+
+# HELICOPTER / CINEMATIC: smoothed chase camera trailing behind the trace head
+HELI_HEIGHT     = 500   # metres above the current trace head
+HELI_DISTANCE   = 3000  # metres behind the direction of travel
+HELI_LOOK_AHEAD = 5     # GPX points used as look-ahead window (direction + target)
+HELI_SMOOTHING  = 0.008  # EMA blend factor: 0 = frozen, 1 = instant snap to desired position
+
+# ORBIT: camera revolves around the terrain centre while the trace draws
+ORBIT_SPEED = 45        # total degrees of orbit rotation over the full animation
+
+VIDEO_OUTPUT = BASE_DIR / 'render' / 'animation.mp4'
+
 # =========================
 # LOAD DEM
 # =========================
@@ -138,6 +162,7 @@ def load_gpx(path):
     lon = []
     lat = []
     elev = []
+    timestamps = []
 
     for track in gpx.tracks:
         for segment in track.segments:
@@ -145,8 +170,10 @@ def load_gpx(path):
                 lon.append(point.longitude)
                 lat.append(point.latitude)
                 elev.append(point.elevation if point.elevation is not None else np.nan)
+                timestamps.append(point.time)  # datetime or None
 
-    return np.array(lon, dtype=np.float64), np.array(lat, dtype=np.float64), np.array(elev, dtype=np.float32)
+    return (np.array(lon, dtype=np.float64), np.array(lat, dtype=np.float64),
+            np.array(elev, dtype=np.float32), timestamps)
 
 
 def infer_dem_crs(dem_crs, dem_path):
@@ -720,6 +747,382 @@ def setup_materials():
 
 
 # =========================
+# ANIMATION
+# =========================
+
+def _gpx_pos_at(projected_points, frac_idx):
+    """Interpolate a 3D position along the projected GPX track.
+
+    frac_idx is a float in [0, N-1] where N = len(projected_points).
+    """
+    n = len(projected_points)
+    idx0 = max(0, min(int(frac_idx), n - 2))
+    idx1 = idx0 + 1
+    f = frac_idx - idx0
+    p0, p1 = projected_points[idx0], projected_points[idx1]
+    return Vector((p0.x + (p1.x - p0.x) * f,
+                   p0.y + (p1.y - p0.y) * f,
+                   p0.z + (p1.z - p0.z) * f))
+
+
+def _travel_dir(projected_points, frac_idx):
+    """Horizontal unit vector of travel direction at frac_idx.
+
+    Samples a window of ±HELI_LOOK_AHEAD points for stability on curved routes.
+    """
+    n = len(projected_points)
+    a = max(0.0, frac_idx - HELI_LOOK_AHEAD)
+    b = min(float(n - 1), frac_idx + HELI_LOOK_AHEAD)
+    pa = _gpx_pos_at(projected_points, a)
+    pb = _gpx_pos_at(projected_points, b)
+    dx, dy = pb.x - pa.x, pb.y - pa.y
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 1e-6:
+        return Vector((1.0, 0.0, 0.0))
+    return Vector((dx / length, dy / length, 0.0))
+
+
+def _point_camera(cam_pos, target):
+    """Return a rotation_euler that points the camera's -Z axis toward target."""
+    direction = Vector((target.x - cam_pos.x,
+                        target.y - cam_pos.y,
+                        target.z - cam_pos.z)).normalized()
+    quat = direction.to_track_quat('-Z', 'Y')
+    return quat.to_euler()
+
+
+def camera_pose_helicopter(projected_points, frac_idx, state):
+    """Smoothed chase camera trailing behind the trace head.
+
+    state is a dict {'pos': Vector|None} that carries the EMA position
+    across frames — pass the same dict every call.
+    """
+    n = len(projected_points)
+    pos = _gpx_pos_at(projected_points, frac_idx)
+    d = _travel_dir(projected_points, frac_idx)
+
+    desired = Vector((pos.x - d.x * HELI_DISTANCE,
+                      pos.y - d.y * HELI_DISTANCE,
+                      pos.z + HELI_HEIGHT))
+
+    if state['pos'] is None:
+        state['pos'] = desired
+    else:
+        a = HELI_SMOOTHING
+        prev = state['pos']
+        state['pos'] = Vector((desired.x * a + prev.x * (1 - a),
+                               desired.y * a + prev.y * (1 - a),
+                               desired.z * a + prev.z * (1 - a)))
+
+    cam_pos = state['pos']
+    look_at = _gpx_pos_at(projected_points, min(frac_idx + HELI_LOOK_AHEAD, float(n - 1)))
+    return cam_pos, _point_camera(cam_pos, look_at)
+
+
+def camera_pose_orbit(terrain_center, t):
+    """Camera revolves around the terrain centre at constant radius and elevation.
+
+    t ∈ [0, 1] is the animation progress fraction.
+    """
+    az = radians(CAMERA_AZIMUTH) + radians(ORBIT_SPEED) * t
+    el = radians(CAMERA_ELEVATION)
+    pos = Vector((terrain_center.x + CAMERA_DISTANCE * np.cos(el) * np.cos(az),
+                  terrain_center.y + CAMERA_DISTANCE * np.cos(el) * np.sin(az),
+                  terrain_center.z + CAMERA_DISTANCE * np.sin(el)))
+    return pos, _point_camera(pos, terrain_center)
+
+
+def camera_pose_bird_eye(projected_points, frac_idx):
+    """Camera hovers directly above the current trace head, looking straight down."""
+    pos_ground = _gpx_pos_at(projected_points, frac_idx)
+    cam_pos = Vector((pos_ground.x, pos_ground.y, pos_ground.z + HELI_HEIGHT))
+    return cam_pos, _point_camera(cam_pos, pos_ground)
+
+
+def camera_pose_cinematic(projected_points, frac_idx, terrain_center, state):
+    """Like HELICOPTER but the gaze is always anchored to the terrain centre."""
+    pos = _gpx_pos_at(projected_points, frac_idx)
+    d = _travel_dir(projected_points, frac_idx)
+
+    desired = Vector((pos.x - d.x * HELI_DISTANCE,
+                      pos.y - d.y * HELI_DISTANCE,
+                      pos.z + HELI_HEIGHT))
+
+    if state['pos'] is None:
+        state['pos'] = desired
+    else:
+        a = HELI_SMOOTHING
+        prev = state['pos']
+        state['pos'] = Vector((desired.x * a + prev.x * (1 - a),
+                               desired.y * a + prev.y * (1 - a),
+                               desired.z * a + prev.z * (1 - a)))
+
+    cam_pos = state['pos']
+    return cam_pos, _point_camera(cam_pos, terrain_center)
+
+
+def _build_frac_idx_map(timestamps, n, total_frames):
+    """Return an array of shape (total_frames+1,) mapping frame → fractional GPX index.
+
+    When timestamps are available the mapping respects real elapsed time so that
+    frames where the hiker moved slowly reveal the trace slowly, matching SPEED.
+    Falls back to uniform distribution when timestamps are absent.
+    """
+    valid_ts = [(i, ts) for i, ts in enumerate(timestamps) if ts is not None]
+
+    if len(valid_ts) >= 2:
+        ts0 = valid_ts[0][1]
+        ts_total = (valid_ts[-1][1] - ts0).total_seconds()
+
+        # Normalised time [0,1] for every GPX point that has a timestamp
+        gps_t = np.array([(ts - ts0).total_seconds() / ts_total
+                           for _, ts in valid_ts], dtype=np.float64)
+        gps_i = np.array([i for i, _ in valid_ts], dtype=np.float64)
+
+        frame_t = np.linspace(0.0, 1.0, total_frames + 1)
+        return np.interp(frame_t, gps_t, gps_i)
+
+    # No timestamps → uniform
+    return np.linspace(0.0, float(n - 1), total_frames + 1)
+
+
+def render_animation_preview(projected_points, timestamps, gpx_obj, t=0.5):
+    """Render a single PNG showing the animation state at fraction t ∈ [0, 1].
+
+    Uses the same camera mode as the full animation so the preview is a faithful
+    snapshot of what that frame will look like.  Output: render/preview_animation.png.
+    """
+    if bpy is None:
+        return
+
+    scene = bpy.context.scene
+    n = len(projected_points)
+    if n < 2:
+        print('  Not enough projected points for preview.')
+        return
+
+    # Map t to a fractional GPX index using timestamp data when available
+    frac_idx_map = _build_frac_idx_map(timestamps, n, total_frames=100)
+    frame_at_t = int(t * 100)
+    frac_idx = float(frac_idx_map[frame_at_t])
+
+    # Reveal the trace up to the chosen point
+    gpx_curve = gpx_obj.data
+    gpx_curve.bevel_factor_end = frac_idx / (n - 1)
+
+    # Position the camera (no smoothing state needed for a single snapshot)
+    cam = setup_camera()
+    if cam is None:
+        return
+
+    terrain_center = Vector((0.0, 0.0, 0.0))
+    terrain = bpy.data.objects.get('terrain')
+    if terrain is not None:
+        try:
+            bbox_world = [terrain.matrix_world @ Vector(corner) for corner in terrain.bound_box]
+            terrain_center = sum(bbox_world, Vector((0.0, 0.0, 0.0))) / len(bbox_world)
+        except Exception:
+            pass
+
+    # For HELICOPTER/CINEMATIC we warm up the EMA by running from frame 0 to t
+    # so the camera position matches where it would be in the real animation.
+    if CAMERA_MODE in ('HELICOPTER', 'CINEMATIC'):
+        state = {'pos': None}
+        warmup_steps = max(1, frame_at_t)
+        for wf in range(warmup_steps + 1):
+            fi = float(frac_idx_map[wf])
+            if CAMERA_MODE == 'CINEMATIC':
+                loc, rot = camera_pose_cinematic(projected_points, fi, terrain_center, state)
+            else:
+                loc, rot = camera_pose_helicopter(projected_points, fi, state)
+    elif CAMERA_MODE == 'ORBIT':
+        loc, rot = camera_pose_orbit(terrain_center, t)
+    else:  # BIRD_EYE
+        loc, rot = camera_pose_bird_eye(projected_points, frac_idx)
+
+    cam.location = loc
+    cam.rotation_euler = rot
+    if scene.camera is None:
+        scene.camera = cam
+
+    # Render
+    out_path = BASE_DIR / 'render' / 'preview_animation.png'
+    scene.render.image_settings.file_format = 'PNG'
+    scene.render.engine = 'CYCLES'
+    try:
+        scene.cycles.device = 'CPU'
+        scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
+    except Exception:
+        pass
+    res_x, res_y = RENDER_RES_QUICK if QUICK_RENDER else RENDER_RES_FULL
+    scene.render.resolution_x = res_x
+    scene.render.resolution_y = res_y
+    scene.render.filepath = str(out_path)
+    print(f'  Rendering animation preview (t={t:.0%}, frac_idx={frac_idx:.1f}/{n-1}) → {out_path}')
+    bpy.ops.render.render(write_still=True)
+    print('  Done.')
+
+
+def animate_scene(projected_points, timestamps, gpx_obj):
+    if bpy is None:
+        return
+
+    scene = bpy.context.scene
+    n = len(projected_points)
+    if n < 2:
+        print('  Not enough projected points for animation.')
+        return
+
+    # ── Compute video duration ────────────────────────────────────────────────
+    valid_ts = [ts for ts in timestamps if ts is not None]
+    if len(valid_ts) >= 2:
+        hike_seconds = (valid_ts[-1] - valid_ts[0]).total_seconds()
+        video_seconds = hike_seconds / ANIMATION_SPEED
+        print(f'  GPX duration: {hike_seconds:.0f}s  →  SPEED={ANIMATION_SPEED}×  →  video: {video_seconds:.1f}s')
+    else:
+        hike_seconds = None
+        video_seconds = ANIMATION_DURATION_FALLBACK
+        print(f'  No GPX timestamps; using ANIMATION_DURATION_FALLBACK={video_seconds}s')
+
+    total_frames = max(1, int(video_seconds * ANIMATION_FPS))
+    print(f'  {ANIMATION_FPS} fps × {video_seconds:.1f}s = {total_frames} frames')
+
+    scene.render.fps = ANIMATION_FPS
+    scene.frame_start = 0
+    scene.frame_end = total_frames
+
+    # ── Frame → fractional GPX index ─────────────────────────────────────────
+    frac_idx_at_frame = _build_frac_idx_map(timestamps, n, total_frames)
+
+    # ── GPX curve reveal via bevel_factor_end ────────────────────────────────
+    # Key at each GPX point's corresponding frame (time-accurate with timestamps,
+    # uniform without).  LINEAR interpolation between keys is then exact.
+    gpx_curve = gpx_obj.data
+    if hike_seconds is not None and len(valid_ts) >= 2:
+        ts0 = valid_ts[0]
+        for i, ts in enumerate(timestamps):
+            if ts is None:
+                continue
+            t_real = (ts - ts0).total_seconds() / hike_seconds
+            frame_for_point = int(round(t_real * total_frames))
+            gpx_curve.bevel_factor_end = i / (n - 1)
+            gpx_curve.keyframe_insert(data_path='bevel_factor_end', frame=frame_for_point)
+    else:
+        gpx_curve.bevel_factor_end = 0.0
+        gpx_curve.keyframe_insert(data_path='bevel_factor_end', frame=0)
+        gpx_curve.bevel_factor_end = 1.0
+        gpx_curve.keyframe_insert(data_path='bevel_factor_end', frame=total_frames)
+
+    # Set LINEAR interpolation so the trace advances at the correct pace.
+    # FCurve API changed in Blender 4.4 (layered actions); try both paths.
+    try:
+        action = gpx_obj.data.animation_data and gpx_obj.data.animation_data.action
+        if action:
+            fcurves = None
+            try:
+                fcurves = action.fcurves          # Blender < 4.4
+            except AttributeError:
+                pass
+            if fcurves is None:
+                try:                              # Blender 4.4+ layered action
+                    fcurves = action.layers[0].strips[0].channelbags[0].fcurves
+                except (AttributeError, IndexError):
+                    pass
+            if fcurves is not None:
+                for fc in fcurves:
+                    if fc.data_path == 'bevel_factor_end':
+                        for kp in fc.keyframe_points:
+                            kp.interpolation = 'LINEAR'
+    except Exception as e:
+        print(f'  Warning: could not set bevel interpolation to LINEAR: {e}')
+
+    # ── Camera ───────────────────────────────────────────────────────────────
+    cam = setup_camera()
+    if cam is None:
+        return
+
+    terrain_center = Vector((0.0, 0.0, 0.0))
+    terrain = bpy.data.objects.get('terrain')
+    if terrain is not None:
+        try:
+            bbox_world = [terrain.matrix_world @ Vector(corner) for corner in terrain.bound_box]
+            terrain_center = sum(bbox_world, Vector((0.0, 0.0, 0.0))) / len(bbox_world)
+        except Exception:
+            pass
+
+    state = {'pos': None}  # mutable EMA state shared across frames
+
+    print(f'  Setting camera keyframes ({CAMERA_MODE})...')
+    for frame in range(total_frames + 1):
+        t = frame / total_frames
+        frac_idx = float(frac_idx_at_frame[frame])
+
+        if CAMERA_MODE == 'ORBIT':
+            loc, rot = camera_pose_orbit(terrain_center, t)
+        elif CAMERA_MODE == 'BIRD_EYE':
+            loc, rot = camera_pose_bird_eye(projected_points, frac_idx)
+        elif CAMERA_MODE == 'CINEMATIC':
+            loc, rot = camera_pose_cinematic(projected_points, frac_idx, terrain_center, state)
+        else:  # HELICOPTER (default)
+            loc, rot = camera_pose_helicopter(projected_points, frac_idx, state)
+
+        cam.location = loc
+        cam.keyframe_insert(data_path='location', frame=frame)
+        cam.rotation_euler = rot
+        cam.keyframe_insert(data_path='rotation_euler', frame=frame)
+
+        if frame % 100 == 0:
+            print(f'    keyframe {frame}/{total_frames}', end='\r', flush=True)
+
+    print()
+
+    if RENDER_ANIMATION:
+        scene.render.engine = 'CYCLES'
+        try:
+            scene.cycles.device = 'CPU'
+            scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
+        except Exception:
+            pass
+        res_x, res_y = RENDER_RES_QUICK if QUICK_RENDER else RENDER_RES_FULL
+        scene.render.resolution_x = res_x
+        scene.render.resolution_y = res_y
+
+        # Blender 5.x removed 'FFMPEG' from image_settings.file_format.
+        # Try the old API; fall back to a PNG frame sequence.
+        ffmpeg_ok = False
+        try:
+            scene.render.image_settings.file_format = 'FFMPEG'
+            scene.render.ffmpeg.format = 'MPEG4'
+            scene.render.ffmpeg.codec = 'H264'
+            try:
+                scene.render.ffmpeg.constant_rate_factor = 'MEDIUM'
+            except Exception:
+                pass
+            scene.render.filepath = str(VIDEO_OUTPUT)
+            ffmpeg_ok = True
+        except (TypeError, AttributeError):
+            frames_dir = VIDEO_OUTPUT.parent / (VIDEO_OUTPUT.stem + '_frames')
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            scene.render.image_settings.file_format = 'PNG'
+            scene.render.filepath = str(frames_dir / 'frame_')
+            print(f'  FFMPEG format not available in this Blender build.')
+            print(f'  Rendering PNG frames to: {frames_dir}')
+            print(f'  Combine afterwards with:')
+            print(f'    ffmpeg -r {ANIMATION_FPS} -i "{frames_dir}\\frame_%04d.png" -c:v libx264 -pix_fmt yuv420p "{VIDEO_OUTPUT}"')
+
+        if scene.camera is None:
+            scene.camera = cam
+        out = VIDEO_OUTPUT if ffmpeg_ok else frames_dir
+        print(f'  Rendering {total_frames} frames → {out}')
+        bpy.ops.render.render(animation=True)
+        print('  Done.')
+    else:
+        print(f'  Keyframes set ({total_frames} frames, {CAMERA_MODE} camera).')
+        print('  In Blender: Render → Render Animation (Ctrl+F12) to export.')
+        print('  Set output path + format in Properties → Output before rendering.')
+
+
+# =========================
 # MAIN PIPELINE
 # =========================
 
@@ -728,8 +1131,9 @@ def main():
     clean_scene()
 
     print('STEP 2/7: Loading GPX track...')
-    lon, lat, gpx_elev = load_gpx(GPX_PATH)
-    print(f'  GPX points loaded: {len(lon)}')
+    lon, lat, gpx_elev, gpx_timestamps = load_gpx(GPX_PATH)
+    ts_count = sum(1 for t in gpx_timestamps if t is not None)
+    print(f'  GPX points loaded: {len(lon)} ({ts_count} with timestamps)')
 
     print('STEP 3/7: Converting GPX coordinates and collecting all touched DEM tiles...')
     dem_candidates = discover_dem_candidates(DEM_FOLDER)
@@ -785,41 +1189,40 @@ def main():
     contour_obj.active_material = mats['contours']
     if gpx_obj is not None:
         gpx_obj.active_material = mats['gpx']
-    cam = setup_camera()
 
-    # Render from camera POV and save PNG
-    try:
-        print('Rendering from camera POV...')
-        scene = bpy.context.scene
-        # Use CPU Cycles renderer to avoid EEVEE GPU compute shader crashes
-        scene.render.image_settings.file_format = 'PNG'
-        # Prefer Cycles CPU to avoid GPU compute shader issues on some hardware
+    if ANIMATE and PREVIEW_ANIMATION:
+        render_animation_preview(projected_points, gpx_timestamps, gpx_obj, t=0.5)
+    elif ANIMATE:
+        animate_scene(projected_points, gpx_timestamps, gpx_obj)
+    else:
+        cam = setup_camera()
         try:
-            scene.render.engine = 'CYCLES'
+            print('Rendering from camera POV...')
+            scene = bpy.context.scene
+            scene.render.image_settings.file_format = 'PNG'
             try:
-                scene.cycles.device = 'CPU'
+                scene.render.engine = 'CYCLES'
+                try:
+                    scene.cycles.device = 'CPU'
+                except Exception:
+                    pass
+                try:
+                    scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
+                except Exception:
+                    pass
+                res_x, res_y = RENDER_RES_QUICK if QUICK_RENDER else RENDER_RES_FULL
+                scene.render.resolution_x = res_x
+                scene.render.resolution_y = res_y
             except Exception:
-                pass
-            # reduce samples for faster renders by default
-            try:
-                scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
-            except Exception:
-                pass
-            res_x, res_y = RENDER_RES_QUICK if QUICK_RENDER else RENDER_RES_FULL
-            scene.render.resolution_x = res_x
-            scene.render.resolution_y = res_y
-        except Exception:
-            # fallback to EEVEE if Cycles unavailable
-            scene.render.engine = 'BLENDER_EEVEE'
-        out_path = BASE_DIR / ('render\\render_quick.png' if QUICK_RENDER else 'render\\render.png')
-        scene.render.filepath = str(out_path)
-        # ensure scene camera is set
-        if scene.camera is None and cam is not None:
-            scene.camera = cam
-        bpy.ops.render.render(write_still=True)
-        print(f'Saved render to {scene.render.filepath}')
-    except Exception as e:
-        print('Rendering failed:', repr(e))
+                scene.render.engine = 'BLENDER_EEVEE'
+            out_path = BASE_DIR / ('render\\render_quick.png' if QUICK_RENDER else 'render\\render.png')
+            scene.render.filepath = str(out_path)
+            if scene.camera is None and cam is not None:
+                scene.camera = cam
+            bpy.ops.render.render(write_still=True)
+            print(f'Saved render to {scene.render.filepath}')
+        except Exception as e:
+            print('Rendering failed:', repr(e))
 
     print(f"DONE: Scene generated with {len(contour_segments)} contour segments and {len(projected_points)} GPX points projected.")
 

@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ignore user-specific files
+gpx/*
+!gpx/Villard-de-Lans_Alpinisme20260620081248.gpx
+render/**
