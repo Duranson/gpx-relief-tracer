@@ -82,7 +82,8 @@ except Exception:  # pragma: no cover - mathutils is not available outside Blend
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
 DEM_FOLDER = BASE_DIR / r"contour_lines\isere\ign"
-GPX_PATH   = BASE_DIR / r"gpx\Villard-de-Lans_Alpinisme20260620081248.gpx"
+GPX_NAME = r"Villard-de-Lans_Alpinisme20260620081248"
+GPX_PATH   = BASE_DIR / r"gpx" / f"{GPX_NAME}.gpx"
 
 # ── Terrain ─────────────────────────────────────────────────────────────────
 VERTICAL_EXAGGERATION = 1.5

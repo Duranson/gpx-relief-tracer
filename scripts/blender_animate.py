@@ -27,7 +27,7 @@ from flight_plan import FlightPlan, Start, ForwardFollow, BackwardFollow, Rotate
 
 # Import the full terrain/GPX pipeline from blender_tracer without running main()
 from blender_tracer import (
-    BASE_DIR, DEM_FOLDER, GPX_PATH, DEM_MARGIN, CONTOUR_INTERVAL,
+    BASE_DIR, DEM_FOLDER, GPX_NAME, GPX_PATH, DEM_MARGIN, CONTOUR_INTERVAL,
     VERTICAL_EXAGGERATION, QUICK_RENDER,
     RENDER_SAMPLES_QUICK, RENDER_SAMPLES_FULL, RENDER_RES_QUICK, RENDER_RES_FULL,
     load_gpx, discover_dem_candidates, gpx_to_dem_coords,
@@ -52,23 +52,24 @@ PLAN = FlightPlan(
         Start(end_t=0.0, azimuth=140.0, elevation=25.0, distance=5000.0),
 
         # First half: trail behind the trace head
-        ForwardFollow(end_t=0.5, distance=3000.0, height=500.0, look_ahead=200.0),
+        ForwardFollow(end_t=0.25, distance=3000.0, height=500.0, look_ahead=200.0),
 
         # Sweep around to a different vantage point
-        Rotate(end_t=0.62, end_azimuth=235.0, end_elevation=30.0, distance=3000.0),
+        Rotate(end_t=0.67, end_azimuth=235.0, end_elevation=30.0, distance=3000.0),
 
         # Second half: lead ahead of the trace head, looking back
         BackwardFollow(end_t=1.0, distance=3000.0, height=500.0),
     ],
-    smoothing=0.005,   # EMA factor; lower = floatier, higher = snappier
+    smoothing=0.025,   # EMA factor; lower = floatier, higher = snappier
 )
 
 # Output controls
-RENDER_PREVIEW   = True    # True → render preview images only (fast, for tuning)
-RENDER_ANIMATION = False   # True → auto-render all frames (slow)
+RENDER_PREVIEW        = False  # True → render preview images only (fast, for tuning)
+RENDER_ANIMATION      = True   # True → auto-render all frames (slow)
+ANIMATION_START_FRAME = 128    # Resume from this frame (0 = start from beginning)
 
-PREVIEW_DIR  = BASE_DIR / 'render' / 'flight_preview'
-VIDEO_OUTPUT = BASE_DIR / 'render' / 'animation.mp4'
+PREVIEW_DIR  = BASE_DIR / 'render' / GPX_NAME / 'flight_preview'
+VIDEO_OUTPUT = BASE_DIR / 'render' / GPX_NAME / 'animation.mp4'
 
 # =============================================================================
 
@@ -96,7 +97,7 @@ def _configure_render(scene):
     scene.render.image_settings.file_format = 'PNG'
     scene.render.engine = 'CYCLES'
     try:
-        scene.cycles.device  = 'CPU'
+        scene.cycles.device = 'CPU'
         scene.cycles.samples = RENDER_SAMPLES_QUICK if QUICK_RENDER else RENDER_SAMPLES_FULL
     except Exception:
         pass
@@ -166,23 +167,32 @@ def apply_flight_plan(plan: FlightPlan, gpx_trace: GPXTrace, gpx_obj, total_fram
         return
 
     scene = bpy.context.scene
+    start_frame = max(0, min(ANIMATION_START_FRAME, total_frames))
+
     scene.render.fps  = ANIMATION_FPS
-    scene.frame_start = 0
+    scene.frame_start = start_frame
     scene.frame_end   = total_frames
 
     cam = _add_camera()
     plan._reset()
 
-    print(f'  Setting keyframes: {total_frames + 1} frames...')
+    print(f'  Setting keyframes: frames {start_frame}–{total_frames}...')
     for frame in range(total_frames + 1):
         t = frame / total_frames
+
+        # Always advance EMA so the camera state is correct from start_frame onward
+        pose = plan.camera_pose(t, gpx_trace)
+
+        if frame < start_frame:
+            if frame % 100 == 0:
+                print(f'    warming EMA: {frame}/{start_frame - 1}', end='\r', flush=True)
+            continue
 
         # GPX trace reveal
         gpx_obj.data.bevel_factor_end = gpx_trace.bevel_factor_at(t)
         gpx_obj.data.keyframe_insert(data_path='bevel_factor_end', frame=frame)
 
         # Camera
-        pose = plan.camera_pose(t, gpx_trace)
         _set_camera_pose(cam, pose)
         cam.keyframe_insert(data_path='location',       frame=frame)
         cam.keyframe_insert(data_path='rotation_euler', frame=frame)
@@ -212,7 +222,7 @@ def _render_video(scene, total_frames: int):
             pass
         scene.render.filepath = str(VIDEO_OUTPUT)
     except (TypeError, AttributeError):
-        frames_dir = VIDEO_OUTPUT.parent / (VIDEO_OUTPUT.stem + '_frames')
+        frames_dir = VIDEO_OUTPUT.parent / GPX_NAME / (VIDEO_OUTPUT.stem + '_frames')
         frames_dir.mkdir(parents=True, exist_ok=True)
         scene.render.image_settings.file_format = 'PNG'
         scene.render.filepath = str(frames_dir / 'frame_')
