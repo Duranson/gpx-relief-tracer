@@ -43,6 +43,8 @@ scripts/
   gpx_trace.py          # GPXTrace wrapper (head_at, travel_dir_at, bevel_factor_at)
   frames_to_mp4.py      # assembles render/animation_frames/*.png into render/render.mp4
   test_dem_selection.py # pytest test for DEM tile selection
+flight_plans/          # per-GPX camera plans, one file per route (see below)
+  _template.py         # starting point for a new route's flight plan
 blender/                # .blend scene file(s)
 gpx/                    # input GPX tracks
 contour_lines/isere/ign/  # IGN DEM tiles (.asc)
@@ -56,9 +58,18 @@ render/                 # render output PNGs, previews, and MP4
 
 ### `blender_animate.py` — pipeline + flight plan animation
 
-Hosts the DEM/contour/terrain/GPX pipeline and the flight-plan camera animation. Edit the `PLAN` block near the top:
+Hosts the DEM/contour/terrain/GPX pipeline and the flight-plan camera animation. To switch to a new GPX, only change `GPX_NAME` near the top — everything else (DEM folder, terrain/contour/material params) is meant to stay stable across routes.
+
+The camera plan itself is **not** defined inline. `load_flight_plan(GPX_NAME)` imports `flight_plans/<GPX_NAME>.py` and reads its module-level `PLAN`, so route-specific camera tuning never touches this shared pipeline script. To add a new route:
+
+1. Copy `flight_plans/_template.py` to `flight_plans/<GPX_NAME>.py`.
+2. Edit its `PLAN` (steps, distances, smoothing) for that route.
+3. Set `GPX_NAME` in `blender_animate.py` to match.
 
 ```python
+# flight_plans/<GPX_NAME>.py
+from flight_plan import FlightPlan, Start, ForwardFollow, BackwardFollow, Rotate
+
 PLAN = FlightPlan(
     steps=[
         Start(end_t=0.0,  azimuth=140.0, elevation=25.0, distance=5000.0),
@@ -70,7 +81,7 @@ PLAN = FlightPlan(
 )
 ```
 
-Set `RENDER_PREVIEW = True` first to render 3 PNGs per step (fast) and tune parameters. Then set `RENDER_PREVIEW = False` for the full animation.
+Set `RENDER_PREVIEW = True` first to render 3 PNGs per step (fast) and tune parameters. Then set `RENDER_PREVIEW = False` for the full animation. Missing a `flight_plans/<GPX_NAME>.py` file raises a `FileNotFoundError` with the expected path.
 
 ## Flight plan architecture
 

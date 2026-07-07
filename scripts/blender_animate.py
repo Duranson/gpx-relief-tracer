@@ -18,6 +18,7 @@ except ImportError:
     bpy = None
 
 import hashlib
+import importlib.util
 
 import numpy as np
 import rasterio
@@ -96,8 +97,9 @@ from render_utils import configure_render, render_animation, set_bevel_linear
 # =========================
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
-DEM_FOLDER = BASE_DIR / r"contour_lines\isere\ign"
+BASE_DIR        = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
+DEM_FOLDER      = BASE_DIR / r"contour_lines\isere\ign"
+FLIGHT_PLANS_DIR = BASE_DIR / "flight_plans"
 GPX_NAME = r"Villard-de-Lans_Alpinisme20260620081248"
 GPX_PATH   = BASE_DIR / r"gpx" / f"{GPX_NAME}.gpx"
 
@@ -674,29 +676,32 @@ def setup_materials():
 
 
 # =============================================================================
-# FLIGHT PLAN — edit this section to customise the camera
+# FLIGHT PLAN — per-GPX camera plan, loaded from flight_plans/<GPX_NAME>.py
 # =============================================================================
 
 ANIMATION_FPS   = 24
 ANIMATION_SPEED = 600   # real-time multiplier (600 → 3 h hike becomes ~34 s video)
 
-PLAN = FlightPlan(
-    steps=[
-        # Start defines where the camera is at t=0.
-        # Set end_t=0.0 so it is instantaneous (no preview image generated).
-        Start(end_t=0.0, azimuth=140.0, elevation=25.0, distance=5000.0),
 
-        # First half: trail behind the trace head
-        ForwardFollow(end_t=0.25, distance=3000.0, height=500.0, look_ahead=200.0),
+def load_flight_plan(gpx_name: str) -> FlightPlan:
+    """Import flight_plans/<gpx_name>.py and return its PLAN.
 
-        # Sweep around to a different vantage point
-        Rotate(end_t=0.67, end_azimuth=235.0, end_elevation=30.0, distance=3000.0),
+    Keeps route-specific camera tuning out of this shared pipeline script —
+    add a new file there for each new GPX instead of editing this one.
+    """
+    plan_path = FLIGHT_PLANS_DIR / f'{gpx_name}.py'
+    if not plan_path.exists():
+        raise FileNotFoundError(
+            f'No flight plan found for {gpx_name!r}. '
+            f'Create {plan_path} (copy flight_plans/_template.py as a starting point).'
+        )
+    spec = importlib.util.spec_from_file_location(f'flight_plans.{gpx_name}', plan_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PLAN
 
-        # Second half: lead ahead of the trace head, looking back
-        BackwardFollow(end_t=1.0, distance=3000.0, height=500.0),
-    ],
-    smoothing=0.025,   # EMA factor; lower = floatier, higher = snappier
-)
+
+PLAN = load_flight_plan(GPX_NAME)
 
 # Output controls
 RENDER_PREVIEW        = False  # True → render preview images only (fast, for tuning)
