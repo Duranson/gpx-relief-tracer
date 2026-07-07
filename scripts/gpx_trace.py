@@ -1,7 +1,7 @@
 """GPX trace spatial queries for the flight plan camera system.
 
 Wraps the list of Blender-projected 3-D points and GPS timestamps produced
-by blender_tracer.project_gpx().  All public methods accept a normalised
+by blender_animate.project_gpx().  All public methods accept a normalised
 animation fraction t ∈ [0, 1].
 """
 

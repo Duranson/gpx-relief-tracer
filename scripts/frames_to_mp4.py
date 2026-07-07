@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from scripts.blender_tracer import GPX_NAME
+from scripts.blender_animate import GPX_NAME
 
 # =============================================================================
 # CONFIGURATION — adjust these to match your render settings
@@ -21,7 +21,7 @@ BASE_DIR    = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
 FRAMES_DIR  = BASE_DIR / 'render' / GPX_NAME / 'animation_frames'
 OUTPUT_FILE = BASE_DIR / 'render' / GPX_NAME / 'render.mp4'
 
-FPS         = 24      # must match ANIMATION_FPS in blender_tracer.py
+FPS         = 24      # must match ANIMATION_FPS in blender_animate.py
 CRF         = 18      # quality: 0 (lossless) → 51 (worst); 18 is visually near-lossless
 PRESET      = 'slow'  # encoding speed/compression trade-off: ultrafast … slow … veryslow
 

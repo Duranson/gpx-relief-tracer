@@ -15,16 +15,5 @@
             ],
             "console": "integratedTerminal"
         },
-        {
-            "name": "Run blender_tracer.py",
-            "type": "pwa-node",
-            "request": "launch",
-            "runtimeExecutable": "C:\\Windows\\System32\\cmd.exe",
-            "runtimeArgs": [
-                "/c",
-                "\"C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe\" --background --python \"${workspaceFolder}\\scripts\\blender_tracer.py\""
-            ],
-            "console": "integratedTerminal"
-        }
     ]
 }

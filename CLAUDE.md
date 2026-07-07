@@ -12,14 +12,13 @@ All scripts run inside Blender's Python environment (Text Editor → Run Script)
 
 ```powershell
 # Headless (adjust path to your Blender installation)
-blender --background --python scripts/blender_tracer.py
 blender --background --python scripts/blender_animate.py
 ```
 
 Outside Blender (pure-Python functions only — Blender scene operations are skipped):
 
 ```powershell
-.venv\Scripts\python scripts/blender_tracer.py
+.venv\Scripts\python scripts/blender_animate.py
 ```
 
 Running tests:
@@ -38,8 +37,8 @@ Convert rendered PNG frames to MP4:
 
 ```
 scripts/
-  blender_tracer.py     # self-contained pipeline (scene + simple animation)
-  blender_animate.py    # flight-plan animation entry point — edit this for custom camera
+  blender_animate.py    # DEM/contour/GPX pipeline + flight-plan animation entry point
+  render_utils.py       # render-engine config, FFMPEG/PNG-fallback rendering, bevel-interpolation fixup
   flight_plan.py        # FlightPlan, ForwardFollow, BackwardFollow, Rotate, Start
   gpx_trace.py          # GPXTrace wrapper (head_at, travel_dir_at, bevel_factor_at)
   frames_to_mp4.py      # assembles render/animation_frames/*.png into render/render.mp4
@@ -53,26 +52,11 @@ render/                 # render output PNGs, previews, and MP4
   animation_frames/     # per-frame PNGs when FFMPEG is unavailable
 ```
 
-## Two entry points
+## Entry point
 
-### 1. `blender_tracer.py` — simple animation
+### `blender_animate.py` — pipeline + flight plan animation
 
-Self-contained. Controlled entirely by constants at the top of the file:
-
-| Constant | Effect |
-|----------|--------|
-| `ANIMATE = False` | Render a single static PNG |
-| `ANIMATE = True, PREVIEW_ANIMATION = True` | Render one mid-course PNG for tuning |
-| `ANIMATE = True, PREVIEW_ANIMATION = False` | Full keyframe animation |
-| `RENDER_ANIMATION = True` | Auto-render after setting keyframes |
-| `CAMERA_MODE` | `'HELICOPTER'` \| `'ORBIT'` \| `'BIRD_EYE'` \| `'CINEMATIC'` |
-| `ANIMATION_SPEED` | Real-time multiplier (e.g. 600 → 3 h hike becomes 34 s video) |
-
-Camera is always a single-mode EMA-smoothed follow throughout the entire animation.
-
-### 2. `blender_animate.py` — flight plan animation
-
-Used when the camera needs to change behaviour at different points in the video. Edit the `PLAN` block near the top:
+Hosts the DEM/contour/terrain/GPX pipeline and the flight-plan camera animation. Edit the `PLAN` block near the top:
 
 ```python
 PLAN = FlightPlan(
@@ -125,12 +109,11 @@ A sequence of `CameraStep` objects. Call `camera_pose(t, gpx_trace)` in ascendin
 
 ### Azimuth convention
 
-Both files use the **standard math convention**: azimuth=0 → +X axis, azimuth=90 → +Y axis (counter-clockwise). This matches the `setup_camera` formula in `blender_tracer.py`:
-`offset.x = dist * cos(el) * cos(az)`, `offset.y = dist * cos(el) * sin(az)`.
+Both files use the **standard math convention**: azimuth=0 → +X axis, azimuth=90 → +Y axis (counter-clockwise).
 
-## Pipeline (shared between both entry points)
+## Pipeline
 
-| Step | Functions (in `blender_tracer.py`) | Notes |
+| Step | Functions (in `blender_animate.py`) | Notes |
 |------|-------------------------------------|-------|
 | 1. Clean scene | `clean_scene` | Removes terrain/contours/GPX/camera objects |
 | 2. Load GPX | `load_gpx` | Returns lon/lat/elev/timestamps via `gpxpy` |
@@ -152,7 +135,7 @@ Cycles/EEVEE render **surfaces** only. A Mesh with edges but no faces is invisib
 
 ### Blender API compatibility
 
-`bpy` and `mathutils` are wrapped in `try/except` at import. A minimal `Vector` stub enables unit-testing outside Blender. The `bevel_factor_end` keyframe interpolation code handles both the pre-4.4 `action.fcurves` API and the Blender 4.4+ layered action API (`action.layers[0].strips[0].channelbags[0].fcurves`).
+`bpy` and `mathutils` are wrapped in `try/except` at import. A minimal `Vector` stub enables unit-testing outside Blender. `render_utils.set_bevel_linear` handles both the pre-4.4 `action.fcurves` API and the Blender 4.4+ layered action API (`action.layers[0].strips[0].channelbags[0].fcurves`) when forcing `bevel_factor_end` keyframes to LINEAR interpolation. `render_utils.render_animation` renders via the `FFMPEG` image-settings format and falls back to a `<stem>_frames/frame_*.png` sequence (with the `ffmpeg` command to assemble it) on Blender builds that lack the FFMPEG muxer.
 
 ### DEM data
 

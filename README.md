@@ -16,7 +16,7 @@ python -m venv .venv
 
 ```powershell
 # Run animation pipeline in Blender (headless)
-blender --background --python scripts/blender_tracer.py
+blender --background --python scripts/blender_animate.py
 
 # Assemble PNG frames into MP4
 .venv\Scripts\python scripts/frames_to_mp4.py

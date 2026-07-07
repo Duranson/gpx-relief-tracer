@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blender_tracer import select_dem_tiles_for_gpx, DEM_FOLDER
+from blender_animate import select_dem_tiles_for_gpx, DEM_FOLDER
 
 
 def test_select_dem_collects_all_overlapping_tiles(tmp_path):
