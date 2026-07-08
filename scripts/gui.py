@@ -111,6 +111,28 @@ def estimate_total_frames(gpx_path):
     return max(1, int(seconds * fps))
 
 
+FRAME_FILE_RE = re.compile(r'frame_(\d+)\.png$')
+
+
+def count_new_frame_files(frames_dir, start_frame):
+    """Count rendered frame_NNNN.png files with index >= start_frame.
+
+    Used to drive the animation progress bar by polling the filesystem instead
+    of parsing Blender's stdout — Blender fully buffers its own progress
+    ('Fra:NNN') text when stdout is piped rather than a real console, so it
+    only shows up in bursts (or not until exit), making it useless for a live
+    progress bar.
+    """
+    if not frames_dir.exists():
+        return 0
+    count = 0
+    for path in frames_dir.glob('frame_*.png'):
+        m = FRAME_FILE_RE.search(path.name)
+        if m and int(m.group(1)) >= start_frame:
+            count += 1
+    return count
+
+
 def format_eta(seconds):
     if seconds is None or seconds != seconds or seconds < 0:  # NaN/negative guard
         return '--:--'
@@ -143,6 +165,9 @@ class App(tk.Tk):
         self.progress_current = 0
         self.first_progress_time = None
         self.first_progress_value = None
+
+        self.frames_dir = None          # set for 'animation' mode; polled for progress
+        self.poll_job = None
 
         self._build_ui()
         self._on_gpx_selected()
@@ -362,6 +387,7 @@ class App(tk.Tk):
                 self.progress_total = 1
             self.progress_mode = 'preview'
             self.progress_start_value = 0
+            self.frames_dir = None
         else:
             try:
                 self.progress_total = estimate_total_frames(gpx_path)
@@ -369,6 +395,10 @@ class App(tk.Tk):
                 self.progress_total = 1
             self.progress_mode = 'animation'
             self.progress_start_value = start_frame
+            self.frames_dir = RENDER_DIR / gpx_name / 'animation_frames'
+            if start_frame == 0 and self.frames_dir.exists():
+                for f in self.frames_dir.glob('frame_*.png'):
+                    f.unlink()
 
         self.progress_current = self.progress_start_value
         self.first_progress_time = None
@@ -382,6 +412,17 @@ class App(tk.Tk):
 
         cmd = [BLENDER_EXE, '--background', '--python', str(ANIMATE_SCRIPT)]
         self._launch_process(cmd, env)
+
+        if self.progress_mode == 'animation':
+            self.poll_job = self.after(1000, self._poll_frame_files)
+
+    def _poll_frame_files(self):
+        self.poll_job = None
+        if self.proc is None or self.progress_mode != 'animation' or self.frames_dir is None:
+            return
+        count = count_new_frame_files(self.frames_dir, self.progress_start_value)
+        self._update_progress(self.progress_start_value + count)
+        self.poll_job = self.after(1000, self._poll_frame_files)
 
     def _start_generate_video(self):
         if self.proc is not None:
@@ -437,6 +478,9 @@ class App(tk.Tk):
     def _cancel_render(self):
         if self.proc is not None:
             self.proc.terminate()
+        if self.poll_job is not None:
+            self.after_cancel(self.poll_job)
+            self.poll_job = None
 
     def _read_process_output(self):
         for line in iter(self.proc.stdout.readline, ''):
@@ -507,6 +551,10 @@ class App(tk.Tk):
                 text=f'Encoding frame {current_value}/{self.progress_total} — ETA {format_eta(eta)}')
 
     def _on_process_finished(self):
+        if self.poll_job is not None:
+            self.after_cancel(self.poll_job)
+            self.poll_job = None
+
         returncode = self.proc.wait() if self.proc else None
         self.proc = None
         self.render_btn.config(state='normal')
