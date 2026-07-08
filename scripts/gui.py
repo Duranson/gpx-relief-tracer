@@ -29,6 +29,7 @@ GPX_DIR          = BASE_DIR / 'gpx'
 FLIGHT_PLANS_DIR = BASE_DIR / 'flight_plans'
 RENDER_DIR       = BASE_DIR / 'render'
 ANIMATE_SCRIPT   = SCRIPTS_DIR / 'blender_animate.py'
+FRAMES_TO_MP4_SCRIPT = SCRIPTS_DIR / 'frames_to_mp4.py'
 TEMPLATE_PLAN    = FLIGHT_PLANS_DIR / '_template.py'
 
 BLENDER_EXE = r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
@@ -136,7 +137,7 @@ class App(tk.Tk):
         self.reader_thread = None
         self.thumbnails = []  # keep references so PhotoImage isn't GC'd
 
-        self.progress_mode = None       # 'preview' | 'animation'
+        self.progress_mode = None       # 'preview' | 'animation' | 'video'
         self.progress_total = 0
         self.progress_start_value = 0   # ANIMATION_START_FRAME, for animation mode
         self.progress_current = 0
@@ -206,8 +207,10 @@ class App(tk.Tk):
         run_frame.pack(fill='x', **pad)
         self.render_btn = ttk.Button(run_frame, text='Render', command=self._start_render)
         self.render_btn.pack(side='left')
+        self.video_btn = ttk.Button(run_frame, text='Generate Video', command=self._start_generate_video)
+        self.video_btn.pack(side='left', padx=8)
         self.cancel_btn = ttk.Button(run_frame, text='Cancel', command=self._cancel_render, state='disabled')
-        self.cancel_btn.pack(side='left', padx=8)
+        self.cancel_btn.pack(side='left')
 
         # Progress
         progress_frame = ttk.Frame(left)
@@ -378,15 +381,57 @@ class App(tk.Tk):
         self.log_text.configure(state='disabled')
 
         cmd = [BLENDER_EXE, '--background', '--python', str(ANIMATE_SCRIPT)]
+        self._launch_process(cmd, env)
+
+    def _start_generate_video(self):
+        if self.proc is not None:
+            return
+
+        gpx_name = self.gpx_var.get()
+        frames_dir = RENDER_DIR / gpx_name / 'animation_frames'
+        frames = sorted(frames_dir.glob('frame_*.png')) if frames_dir.exists() else []
+        if not frames:
+            messagebox.showerror(
+                'No frames found',
+                f'No frame_*.png files found in {frames_dir}.\n\n'
+                'Render the animation first. Note this step is only needed when the '
+                'Blender build falls back to a PNG sequence instead of writing the MP4 directly.')
+            return
+
+        env = os.environ.copy()
+        env['GPX_NAME'] = gpx_name
+
+        self.progress_mode = 'video'
+        self.progress_total = len(frames)
+        self.progress_start_value = 0
+        self.progress_current = 0
+        self.first_progress_time = None
+        self.first_progress_value = None
+        self.progress_bar['value'] = 0
+        self.progress_label.config(text='Starting (video)...')
+
+        self.log_text.configure(state='normal')
+        self.log_text.delete('1.0', 'end')
+        self.log_text.configure(state='disabled')
+
+        cmd = [sys.executable, str(FRAMES_TO_MP4_SCRIPT)]
+        self._launch_process(cmd, env)
+
+    def _launch_process(self, cmd, env):
+        # Both blender_animate.py and frames_to_mp4.py print non-ASCII characters
+        # (e.g. '→'); with stdout piped (not a console), Python falls back to the
+        # system codepage and crashes on them unless forced to UTF-8 here.
+        env.setdefault('PYTHONIOENCODING', 'utf-8')
         self.proc = subprocess.Popen(
             cmd, cwd=str(BASE_DIR), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            encoding='utf-8', errors='replace', bufsize=1,
         )
         self.reader_thread = threading.Thread(target=self._read_process_output, daemon=True)
         self.reader_thread.start()
 
         self.render_btn.config(state='disabled')
+        self.video_btn.config(state='disabled')
         self.cancel_btn.config(state='normal')
 
     def _cancel_render(self):
@@ -426,6 +471,10 @@ class App(tk.Tk):
         elif self.progress_mode == 'preview':
             if re.search(r'^\s*Preview:', line):
                 self._update_progress(self.progress_current + 1)
+        elif self.progress_mode == 'video':
+            m = re.search(r'frame=\s*(\d+)', line)
+            if m:
+                self._update_progress(int(m.group(1)))
 
     def _update_progress(self, current_value):
         self.progress_current = current_value
@@ -450,14 +499,18 @@ class App(tk.Tk):
         if self.progress_mode == 'animation':
             self.progress_label.config(
                 text=f'Frame {current_value}/{self.progress_total} — ETA {format_eta(eta)}')
-        else:
+        elif self.progress_mode == 'preview':
             self.progress_label.config(
                 text=f'Preview {current_value}/{self.progress_total} — ETA {format_eta(eta)}')
+        else:
+            self.progress_label.config(
+                text=f'Encoding frame {current_value}/{self.progress_total} — ETA {format_eta(eta)}')
 
     def _on_process_finished(self):
         returncode = self.proc.wait() if self.proc else None
         self.proc = None
         self.render_btn.config(state='normal')
+        self.video_btn.config(state='normal')
         self.cancel_btn.config(state='disabled')
 
         if returncode == 0:

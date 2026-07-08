@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from scripts.blender_animate import GPX_NAME
+from blender_animate import GPX_NAME
 
 # =============================================================================
 # CONFIGURATION — adjust these to match your render settings
