@@ -4,6 +4,7 @@ Run this script in Blender's Text Editor, or headless:
     blender --background --python scripts/blender_animate.py
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -100,7 +101,7 @@ from render_utils import configure_render, render_animation, set_bevel_linear
 BASE_DIR        = Path(r"C:\Users\fabie\OneDrive\Documents\gpx-relief-tracer")
 DEM_FOLDER      = BASE_DIR / r"contour_lines\isere\ign"
 FLIGHT_PLANS_DIR = BASE_DIR / "flight_plans"
-GPX_NAME = r"Villard-de-Lans_Alpinisme20260620081248"
+GPX_NAME = os.environ.get('GPX_NAME', r"Villard-de-Lans_Randonnée20260619215335")
 GPX_PATH   = BASE_DIR / r"gpx" / f"{GPX_NAME}.gpx"
 
 # ── Terrain ─────────────────────────────────────────────────────────────────
@@ -704,9 +705,11 @@ def load_flight_plan(gpx_name: str) -> FlightPlan:
 PLAN = load_flight_plan(GPX_NAME)
 
 # Output controls
-RENDER_PREVIEW        = False  # True → render preview images only (fast, for tuning)
-RENDER_ANIMATION      = True   # True → auto-render all frames (slow)
-ANIMATION_START_FRAME = 128    # Resume from this frame (0 = start from beginning)
+# All three may be overridden by environment variables (set by scripts/gui.py)
+# so the shared pipeline script itself never needs editing for a headless run.
+RENDER_PREVIEW        = os.environ.get('RENDER_PREVIEW', '0') == '1'    # True → render preview images only (fast, for tuning)
+RENDER_ANIMATION      = os.environ.get('RENDER_ANIMATION', '1') == '1'  # True → auto-render all frames (slow)
+ANIMATION_START_FRAME = int(os.environ.get('ANIMATION_START_FRAME', '0'))  # Resume from this frame (0 = start from beginning)
 
 PREVIEW_DIR  = BASE_DIR / 'render' / GPX_NAME / 'flight_preview'
 VIDEO_OUTPUT = BASE_DIR / 'render' / GPX_NAME / 'animation.mp4'
